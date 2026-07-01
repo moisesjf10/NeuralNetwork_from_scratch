@@ -42,3 +42,40 @@ class Layer:
         dX = dZ @ self.W.T
 
         return dX
+
+
+class NeuralNetwork:
+    def __init__(self, layers, loss):
+        self.layers=layers
+        self.loss=loss
+    
+    def forward(self, X):
+        y_pred=X
+        for l in self.layers:
+            y_pred=l.forward(y_pred)
+        
+        return y_pred
+    
+    def backward(self, y_pred, y_true):
+        loss_value = self.loss(y_pred, y_true)
+        grad = self.loss.derivative(y_pred, y_true)
+        for layer in reversed(self.layers):
+            grad = layer.backward(grad)
+        return loss_value
+
+    def update(self, lr):
+        for l in self.layers:
+            l.W=l.W-lr*l.dW
+            l.b=l.b-lr*l.db
+    
+    def train(self, X, y, epochs, lr):
+        losses=[]
+        for i in range(epochs):
+            y_pred=self.forward(X)
+            loss_value=self.backward(y_pred, y)
+            self.update(lr)
+            losses.append(loss_value)
+            if(i%100==0) print(f"Loss (epoch {i}): {losses[i]}")
+        
+        return losses
+        
