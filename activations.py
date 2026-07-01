@@ -7,7 +7,7 @@ class Sigmoid:
                         np.exp(x)/(1+np.exp(x)))
 
     def derivative(self, x):
-        """Compute the derivative of the sigmoid in x"""ç
+        """Compute the derivative of the sigmoid in x"""
         sig=self(x)
         return sig*(1-sig)
 
@@ -25,6 +25,6 @@ class Tanh:
         """Compute hiperbolic tangent of x"""
         return np.tanh(x)
 
-        def derivative(self, x):
+    def derivative(self, x):
         """Computes the derivative of tanh in x"""
         return 1-self(x)**2

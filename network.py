@@ -75,7 +75,8 @@ class NeuralNetwork:
             loss_value=self.backward(y_pred, y)
             self.update(lr)
             losses.append(loss_value)
-            if(i%100==0) print(f"Loss (epoch {i}): {losses[i]}")
+            if(i%100==0):
+                print(f"Loss (epoch {i}): {losses[i]}")
         
         return losses
         
