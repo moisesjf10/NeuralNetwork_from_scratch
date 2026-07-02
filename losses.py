@@ -15,3 +15,16 @@ class BCE:
     def derivative(self, y_pred, y_true):
         y_pred = np.clip(y_pred, 1e-8, 1-1e-8)
         return -(y_true/y_pred - (1-y_true)/(1-y_pred))
+
+class CategoricalCrossEntropy:
+    def __call__(self, y_pred, y_true):
+        y_pred = np.clip(y_pred, 1e-8, 1-1e-8)
+        N=y_pred.shape[0]
+        return -np.sum(y_true*np.log(y_pred))/N
+
+    def derivative(self, y_pred, y_true):
+        y_pred = np.clip(y_pred, 1e-8, 1-1e-8)
+        return (y_pred-y_true)/y_pred.shape[0]
+
+           
+
