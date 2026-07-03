@@ -81,8 +81,8 @@ class NeuralNetwork:
                 self.update(lr)
             
             losses_epoch.append(loss_epoch/len(X_batches))
-            if(epoch%100==0):
-                print(f"Loss (epoch {epoch}): {losses_epoch[epoch]}")
+            #if(epoch%100==0):
+            print(f"Loss (epoch {epoch}): {losses_epoch[epoch]}")
         return losses_epoch
     
     def create_batches(self, X, y, batch_size):
