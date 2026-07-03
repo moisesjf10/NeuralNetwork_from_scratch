@@ -4,7 +4,8 @@ import numpy as np
 # Paste your implementations here or import them
 from activations import ReLU, Sigmoid, Tanh
 from losses import MSE, BCE
-from network import Layer, NeuralNetwork
+from network import NeuralNetwork
+from layers import Layer
 from activations import Softmax
 from losses import CategoricalCrossEntropy
 # ─────────────────────────────────────────────

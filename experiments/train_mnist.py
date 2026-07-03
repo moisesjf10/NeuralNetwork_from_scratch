@@ -3,7 +3,8 @@ from sklearn.datasets import fetch_openml
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder
 
-from network import Layer, NeuralNetwork
+from network import NeuralNetwork
+from layers import Layer
 from activations import ReLU, Softmax
 from losses import CategoricalCrossEntropy
 
