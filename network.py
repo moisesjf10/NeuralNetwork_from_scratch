@@ -23,9 +23,10 @@ class NeuralNetwork:
 
     def update(self, lr):
         for l in self.layers:
-            l.W=l.W-lr*l.dW
-            l.b=l.b-lr*l.db
-    
+            if hasattr(l, 'dW'): #flattenLayer and poolingLayer haven't dW and db attribute
+                l.W=l.W-lr*l.dW
+                l.b=l.b-lr*l.db
+        
     def train(self, X, y, epochs, lr, batch_size=32):
         losses_epoch=[]
         for epoch in range(epochs):
