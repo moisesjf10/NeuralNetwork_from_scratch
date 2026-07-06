@@ -13,17 +13,20 @@ neural_net/
 ├── activations.py          # Activation functions and their derivatives
 ├── losses.py               # Loss functions and their derivatives
 ├── network.py              # NeuralNetwork class
+├── optimizers.py           # SGD, Adam
 ├── layers/
 │   ├── __init__.py         # Package exports
 │   ├── dense.py            # Fully connected layer
 │   ├── flatten.py          # FlattenLayer
 │   ├── pooling.py          # PoolingLayer (Max Pooling)
 │   └── conv.py             # ConvLayer (im2col)
+├── models/                 # Saved weights (.npz)
 └── experiments/
-    ├── test_xor.py         # XOR sanity check
-    ├── tests.py            # Full test suite with gradient checking
-    ├── train_mnist.py      # Dense network on MNIST
-    └── train_mnist_cnn.py  # CNN on MNIST
+    ├── tests.py                # Full test suite with gradient checking
+    ├── train_mnist.py          # Dense network on MNIST
+    ├── train_mnist_cnn.py      # CNN on MNIST
+    ├── train_mnist_compare.py  # SGD vs Adam comparison
+    └── plots/                  # Generated plots
 ```
 
 ## Dependencies
@@ -40,14 +43,19 @@ Install with:
 pip install numpy matplotlib jupyter scikit-learn
 ```
 
+Run experiments from the project root with:
+```bash
+python3 -m experiments.train_mnist
+```
+
 ---
 
 ## Results
 
-| Architecture | Dataset | Train Accuracy | Test Accuracy |
-|---|---|---|---|
-| Dense 784→128→64→10 | MNIST | 99.98% | 97.61% |
-| CNN (in progress) | MNIST | — | — |
+| Architecture | Optimizer | Dataset | Train Accuracy | Test Accuracy |
+|---|---|---|---|---|
+| Dense 784→128→64→10 | SGD (lr=0.1) | MNIST | 99.98% | 97.61% |
+| CNN (p=1) | SGD (lr=0.01) | MNIST | 98.88% | 98.16% |
 
 ---
 
@@ -232,9 +240,10 @@ for each epoch:
     shuffle data randomly
     split into batches of size B
     for each batch:
+        zero_grad()
         forward(X_batch)
         backward(y_pred_batch, y_batch)
-        update weights
+        optimizer.step() or update(lr)
     record mean loss over all batches
 ```
 
@@ -242,14 +251,54 @@ The shuffle at the start of each epoch ensures batches are different every time,
 
 ---
 
-### 6. Weight Update (SGD)
+### 6. Optimizers
 
-Once the gradients are computed, each parameter is updated in the direction that reduces the loss:
+#### SGD — Stochastic Gradient Descent
+
+The simplest update rule. Every parameter is updated by the same learning rate $\eta$:
 
 $$W^{[l]} \leftarrow W^{[l]} - \eta \cdot dW^{[l]}$$
 $$b^{[l]} \leftarrow b^{[l]} - \eta \cdot db^{[l]}$$
 
-where $\eta$ is the learning rate.
+Simple and effective for well-tuned problems, but uses the same learning rate for all parameters regardless of their gradient history.
+
+---
+
+#### Adam — Adaptive Moment Estimation
+
+Adam combines two ideas: **Momentum** (smooth gradient directions using a running average) and **RMSProp** (adapt the learning rate per parameter using the magnitude of past gradients).
+
+For each parameter, Adam maintains two state vectors updated at every step $t$:
+
+$$m_t = \beta_1 \cdot m_{t-1} + (1 - \beta_1) \cdot g_t$$
+$$v_t = \beta_2 \cdot v_{t-1} + (1 - \beta_2) \cdot g_t^2$$
+
+- $m_t$ — first moment: running average of gradients (direction)
+- $v_t$ — second moment: running average of squared gradients (magnitude)
+- $\beta_1 = 0.9$, $\beta_2 = 0.999$ — decay rates (hyperparameters)
+
+**Bias correction** — at the start of training $m_0 = v_0 = 0$, which biases the estimates toward zero. The correction amplifies the moments in early steps and fades as $t$ grows:
+
+$$\hat{m}_t = \frac{m_t}{1 - \beta_1^t} \qquad \hat{v}_t = \frac{v_t}{1 - \beta_2^t}$$
+
+**Weight update:**
+
+$$\theta_t = \theta_{t-1} - \eta \cdot \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}$$
+
+where $\eta = 0.001$ and $\epsilon = 10^{-8}$.
+
+The denominator $\sqrt{\hat{v}_t}$ normalizes each parameter's update by its gradient history — parameters with consistently large gradients receive smaller updates, and vice versa. This makes Adam robust to different learning rate scales across layers.
+
+**Usage:**
+
+```python
+from optimizers import Adam
+
+optimizer = Adam(lr=0.001)
+net.train(X, y, epochs=30, batch_size=128, lr=0.001, optimizer=optimizer)
+```
+
+Adam is slower per step than SGD (more operations per parameter) but typically converges in fewer epochs. On simple problems like MNIST both reach similar final accuracy; on harder problems Adam's advantage is more pronounced.
 
 ---
 
@@ -346,14 +395,14 @@ Bridges convolutional and dense layers. Reshapes a volume $(N, C, H, W)$ into a 
 #### CNN Architecture for MNIST
 
 ```
-Input:           (N, 1, 28, 28)
-ConvLayer(8):    (N, 8, 26, 26)    8 filters, 3x3, no padding
-MaxPool(2x2):    (N, 8, 13, 13)
-ConvLayer(16):   (N, 16, 11, 11)   16 filters, 3x3, no padding
-MaxPool(2x2):    (N, 16, 5, 5)
-FlattenLayer:    (N, 400)          16 * 5 * 5
-DenseLayer(64):  (N, 64)
-DenseLayer(10):  (N, 10)           Softmax output
+Input:              (N, 1, 28, 28)
+ConvLayer(8, p=1):  (N, 8, 28, 28)    8 filters, 3x3, padding=1
+MaxPool(2x2):       (N, 8, 14, 14)
+ConvLayer(16, p=1): (N, 16, 14, 14)   16 filters, 3x3, padding=1
+MaxPool(2x2):       (N, 16, 7, 7)
+FlattenLayer:       (N, 784)           16 * 7 * 7
+DenseLayer(64):     (N, 64)
+DenseLayer(10):     (N, 10)            Softmax output
 ```
 
 ---
@@ -362,18 +411,32 @@ DenseLayer(10):  (N, 10)           Softmax output
 
 The `NeuralNetwork` class orchestrates all layer types. All layer types (`Layer`, `ConvLayer`, `PoolingLayer`, `FlattenLayer`) share the same interface (`forward` and `backward`), so `NeuralNetwork` treats them uniformly. Layers without learnable parameters are skipped in `update` using `hasattr`.
 
+The `train` method accepts an optional `optimizer` argument. If none is provided it falls back to SGD via `update(lr)`:
+
 ```python
-net = NeuralNetwork(
-    layers=[
-        ConvLayer(1, 8, 3),
-        PoolingLayer(2),
-        FlattenLayer(),
-        Layer(400, 64, ReLU()),
-        Layer(64, 10, Softmax())
-    ],
-    loss=CategoricalCrossEntropy()
-)
-net.train(X, y, epochs=30, batch_size=128, lr=0.01)
+# SGD
+net.train(X, y, epochs=30, batch_size=128, lr=0.1)
+
+# Adam
+from optimizers import Adam
+net.train(X, y, epochs=30, batch_size=128, lr=0.001, optimizer=Adam(lr=0.001))
+```
+
+This follows the **dependency injection** pattern: `NeuralNetwork` does not import or instantiate any optimizer. The optimizer is passed in from outside, so the network works with any object that implements `step(layers)`.
+
+---
+
+## Saving and Loading Weights
+
+Trained weights are serialized with `pickle` and saved to a `.pkl` file. The architecture must be reconstructed manually before loading — only the parameter values are stored, not the layer types or hyperparameters.
+
+```python
+# Save after training
+net.save_weights('models/mnist_cnn.pkl')
+
+# Load in a new session
+net = NeuralNetwork(layers=[...], loss=...)   # same architecture
+net.load_weights('models/mnist_cnn.pkl')
 ```
 
 ---
@@ -390,6 +453,8 @@ and compared against the analytical gradient from backpropagation. Relative erro
 
 $$\text{relative error} = \frac{\|g_{analytical} - g_{numerical}\|}{\|g_{analytical}\| + \|g_{numerical}\|}$$
 
+The gradient checker uses `hasattr` to skip layers without learnable parameters (`FlattenLayer`, `PoolingLayer`), and works with all layer types including `ConvLayer`.
+
 ---
 
 ## Roadmap
@@ -404,6 +469,10 @@ $$\text{relative error} = \frac{\|g_{analytical} - g_{numerical}\|}{\|g_{analyti
 - [x] FlattenLayer
 - [x] PoolingLayer (Max Pooling)
 - [x] ConvLayer (im2col + col2im)
-- [ ] MNIST with CNN
-- [ ] Advanced optimizers (Momentum, Adam)
+- [x] MNIST with CNN (98.16% test accuracy)
+- [x] Adam optimizer
+- [x] SGD vs Adam comparison experiment
+- [x] Save and load weights
 - [ ] Regularization (L2, Dropout)
+- [ ] Learning rate scheduling
+- [ ] Batch Normalization
