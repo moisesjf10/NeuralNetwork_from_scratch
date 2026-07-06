@@ -1,7 +1,7 @@
 import numpy as np
 from activations import ReLU, Sigmoid, Tanh
 from layers import Layer
-
+import pickle
 class NeuralNetwork:
     def __init__(self, layers, loss):
         self.layers=layers
@@ -56,4 +56,26 @@ class NeuralNetwork:
         y_batches = [y_shuffled[i:i + batch_size] for i in range(0, y.shape[0], batch_size)]
 
         return X_batches, y_batches
+    
+    def save_weights(self, filepath):
+        model_state = []
+        for layer in self.layers:
+            if hasattr(layer, 'W') and layer.W is not None:
+                model_state.append({'W': layer.W, 'b': layer.b})
+            else:
+                model_state.append(None)
+                
+        with open(filepath, 'wb') as f:
+            pickle.dump(model_state, f)
+        print(f"Weights saved to: {filepath}")
+
+    def load_weights(self, filepath):
+        with open(filepath, 'rb') as f:
+            model_state = pickle.load(f)
+            
+        for i, layer in enumerate(self.layers):
+            if model_state[i] is not None:
+                layer.W = model_state[i]['W']
+                layer.b = model_state[i]['b']
+        print(f"Weights loaded successfully from: {filepath}")
         
