@@ -2,6 +2,7 @@ import numpy as np
 from activations import ReLU, Sigmoid, Tanh
 from layers import Layer
 import pickle
+
 class NeuralNetwork:
     def __init__(self, layers, loss):
         self.layers=layers
@@ -27,7 +28,7 @@ class NeuralNetwork:
                 l.W=l.W-lr*l.dW
                 l.b=l.b-lr*l.db
         
-    def train(self, X, y, epochs, lr, batch_size=32):
+    def train(self, X, y, epochs, lr, batch_size=32, optimizer=None):
         losses_epoch=[]
         for epoch in range(epochs):
             loss_epoch=0
@@ -35,9 +36,13 @@ class NeuralNetwork:
             X_batches, y_batches = self.create_batches(X, y, batch_size=batch_size)
 
             for X_batch, y_batch in zip(X_batches, y_batches):
+                self.zero_grad()
                 y_pred=self.forward(X_batch)
                 loss_epoch+=self.backward(y_pred, y_batch)
-                self.update(lr)
+                if optimizer is not None:
+                    optimizer.step(self.layers)
+                else: #SGD
+                    self.update(lr)
             
             losses_epoch.append(loss_epoch/len(X_batches))
             #if(epoch%100==0):
@@ -56,6 +61,12 @@ class NeuralNetwork:
         y_batches = [y_shuffled[i:i + batch_size] for i in range(0, y.shape[0], batch_size)]
 
         return X_batches, y_batches
+    
+    def zero_grad(self):
+        for layer in self.layers:
+            if hasattr(layer, 'dW'):
+                layer.dW = np.zeros_like(layer.W)
+                layer.db = np.zeros_like(layer.b)
     
     def save_weights(self, filepath):
         model_state = []

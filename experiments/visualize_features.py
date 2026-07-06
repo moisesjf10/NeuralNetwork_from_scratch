@@ -9,9 +9,6 @@ from layers import Layer, FlattenLayer, PoolingLayer, ConvLayer
 from activations import ReLU, Softmax
 from losses import CategoricalCrossEntropy
 
-# ══════════════════════════════════════════════
-# 0. DIRECTORY SETUP
-# ══════════════════════════════════════════════
 # Get the directory where this script is located (experiments/)
 script_dir = os.path.dirname(os.path.abspath(__file__))
 # Define the output directory path (experiments/plots/)
@@ -21,9 +18,7 @@ output_dir = os.path.join(script_dir, "plots")
 os.makedirs(output_dir, exist_ok=True)
 print(f"📁 Output directory verified at: {output_dir}")
 
-# ══════════════════════════════════════════════
-# 1. REBUILD THE NETWORK AND LOAD MEMORY
-# ══════════════════════════════════════════════
+
 print("Instantiating architecture and loading weights...")
 net = NeuralNetwork(
     layers=[
@@ -44,9 +39,8 @@ net.load_weights("cnn_mnist.pkl")
 # Extract the first convolutional layer (index 0)
 conv1 = net.layers[0]
 
-# ══════════════════════════════════════════════
-# 2. VISUALIZE LEARNED FILTERS (WEIGHTS)
-# ══════════════════════════════════════════════
+#VISUALIZE LEARNED FILTERS (WEIGHTS)
+
 # W shape is (F, C, f, f) -> (8, 1, 3, 3)
 filters = conv1.W 
 
@@ -71,9 +65,8 @@ plt.savefig(filters_path, dpi=300, bbox_inches='tight')
 print(f"✅ Filters saved as: {filters_path}")
 plt.close(fig)
 
-# ══════════════════════════════════════════════
-# 3. VISUALIZE FEATURE MAPS (ACTIVATIONS)
-# ══════════════════════════════════════════════
+#VISUALIZE FEATURE MAPS (ACTIVATIONS)
+
 print("\nDownloading a test image from MNIST...")
 mnist = fetch_openml('mnist_784', version=1, parser='auto')
 X = mnist.data.values.astype(np.float32) / 255.0
