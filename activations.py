@@ -56,3 +56,14 @@ class Softmax:
         the propagated gradients will be mathematically incorrect.
         """
         return np.ones_like(Z)
+
+class Tanh:
+    def __call__(self, x):
+        """Compute hyperbolic tangent of X"""
+        return np.tanh(x)
+    
+    def derivative(self, x):
+        """Compute the derivative of tanh in X"""
+        return 1 - self(x)**2
+
+
