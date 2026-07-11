@@ -54,3 +54,47 @@ class CharTokenizer:
         one_hot[np.arange(seq_len), indices] = 1.0
         
         return one_hot
+    
+    def create_dataset(self, text, seq_length, stride=1):
+        """
+        Slices a long text into sliding windows to train the RNN.
+        Returns X and Y tensors in One-Hot format ready for the network.
+        
+        Args:
+            text: Full string of the dataset.
+            seq_length: Length of the window (e.g., 25 characters).
+            stride: How many steps the window advances in each iteration (1 = max overlap).
+        """
+        X_indices = []
+        Y_indices = []
+        
+        # Slide the window across the text. 
+        # We subtract seq_length to ensure there is always an extra character for Y.
+        for i in range(0, len(text) - seq_length, stride):
+            # X: The current window the network will read
+            sequence_x = text[i : i + seq_length]
+            # Y: The same window, but shifted 1 position into the future
+            sequence_y = text[i + 1 : i + seq_length + 1]
+            
+            # Convert characters to their numeric IDs
+            X_indices.append(self.encode(sequence_x))
+            Y_indices.append(self.encode(sequence_y))
+            
+        print(f"Dataset created: {len(X_indices)} windows of length {seq_length}.")
+        
+        # Convert lists to NumPy arrays
+        X_array = np.array(X_indices)
+        Y_array = np.array(Y_indices)
+        
+        # Convert to 3D One-Hot tensors -> Shape: (Batch, Time, Vocab)
+        # Note: This can consume significant RAM if the dataset is huge.
+        # If you hit MemoryErrors, you should yield these on-the-fly via a Python generator.
+        batch_size = X_array.shape[0]
+        X_onehot = np.zeros((batch_size, seq_length, self.vocab_size))
+        Y_onehot = np.zeros((batch_size, seq_length, self.vocab_size))
+        
+        for b in range(batch_size):
+            X_onehot[b] = self.to_one_hot(X_array[b])
+            Y_onehot[b] = self.to_one_hot(Y_array[b])
+            
+        return X_onehot, Y_onehot
