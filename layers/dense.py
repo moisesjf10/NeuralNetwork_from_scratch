@@ -20,12 +20,27 @@ class Layer:
         self.b=np.zeros((1,n_neurons))
     
     def forward(self, X):
+        self.original_shape = X.shape
+        if len(X.shape) == 3:
+            batch_size, time_steps, features = X.shape
+            X = X.reshape(batch_size * time_steps, features)
+
         self.X=X #(n_ejemplos, n_inputs) lo guardo para backward
         self.Z= X@self.W+self.b
 
-        return self.activation(self.Z)
+        A = self.activation(self.Z)
+
+        if len(self.original_shape) == 3:
+            A = A.reshape(batch_size, time_steps, self.n_neurons)
+
+        return A
 
     def backward(self,dA):
+        batch_size, time_steps = None, None
+        if len(dA.shape) == 3:
+            batch_size, time_steps, n_neurons = dA.shape
+            dA = dA.reshape(batch_size * time_steps, n_neurons)
+        
         # Backpropagate the gradient through the activation function (element wise)
         dZ = dA * self.activation.derivative(self.Z) 
         
@@ -40,5 +55,8 @@ class Layer:
         # Compute the gradient with respect to the inputs
         # (batch_size, n_inputs)
         dX = dZ @ self.W.T
+
+        if len(self.original_shape) == 3:
+            dX = dX.reshape(batch_size, time_steps, self.n_inputs)
 
         return dX
