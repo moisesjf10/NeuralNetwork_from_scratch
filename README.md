@@ -10,22 +10,28 @@ The goal of this project is not to build the most efficient neural network, but 
 
 ```
 neural_net/
+├── app_draw.py             # Streamlit handwritten digit drawing app
 ├── activations.py          # Activation functions and their derivatives
 ├── losses.py               # Loss functions and their derivatives
 ├── network.py              # NeuralNetwork class
-├── optimizers.py           # SGD, Adam
+├── optimizers.py           # Adam optimizer (SGD is built-in)
+├── utils.py                # CharTokenizer and data utilities
 ├── layers/
 │   ├── __init__.py         # Package exports
-│   ├── dense.py            # Fully connected layer
+│   ├── dense.py            # Fully connected layer (supporting 3D sequential input)
 │   ├── flatten.py          # FlattenLayer
 │   ├── pooling.py          # PoolingLayer (Max Pooling)
-│   └── conv.py             # ConvLayer (im2col)
-├── models/                 # Saved weights (.npz)
+│   ├── conv.py             # ConvLayer (im2col / col2im)
+│   └── rnn.py              # RNNLayer with Backpropagation Through Time
+├── models/                 # Saved weights (.pkl / .npz)
 └── experiments/
-    ├── tests.py                # Full test suite with gradient checking
+    ├── test.py                 # Full test suite (19 tests: Dense, CNN, RNN)
     ├── train_mnist.py          # Dense network on MNIST
     ├── train_mnist_cnn.py      # CNN on MNIST
     ├── train_mnist_compare.py  # SGD vs Adam comparison
+    ├── train_cifar10.py        # 3-layer CNN on CIFAR-10
+    ├── train_rnn.py            # Character-level RNN text generation
+    ├── visualize_features.py   # Filters and activation maps visualizer
     └── plots/                  # Generated plots
 ```
 
@@ -36,11 +42,14 @@ numpy
 matplotlib
 jupyter
 scikit-learn
+opencv-python
+streamlit
+streamlit-drawable-canvas
 ```
 
 Install with:
 ```bash
-pip install numpy matplotlib jupyter scikit-learn
+pip install numpy matplotlib jupyter scikit-learn opencv-python streamlit streamlit-drawable-canvas
 ```
 
 Run experiments from the project root with:
@@ -404,6 +413,56 @@ FlattenLayer:       (N, 784)           16 * 7 * 7
 DenseLayer(64):     (N, 64)
 DenseLayer(10):     (N, 10)            Softmax output
 ```
+### 9. Recurrent Neural Networks (RNN)
+
+Unlike feedforward networks, Recurrent Neural Networks (RNNs) process sequential data by maintaining a hidden state vector $h_t$ that acts as a memory of past inputs.
+
+#### Mathematical Formulation
+
+For each time step $t \in \{1, \dots, T\}$, given input $x_t$ of shape $(1, n_{inputs})$ and the previous hidden state $h_{t-1}$ of shape $(1, n_{hidden})$:
+
+$$Z_t = x_t W_{hx} + h_{t-1} W_{hh} + b$$
+$$h_t = \tanh(Z_t)$$
+
+where:
+- $W_{hx}$ is the input-to-hidden weight matrix of shape $(n_{inputs}, n_{hidden})$ (initialized using Xavier/Glorot Normal initialization)
+- $W_{hh}$ is the hidden-to-hidden weight matrix of shape $(n_{hidden}, n_{hidden})$ (initialized using Orthogonal initialization to preserve gradient norm across time steps)
+- $b$ is the bias vector of shape $(1, n_{hidden})$ (initialized to zero)
+- $h_0$ is the initial hidden state, initialized to zero.
+
+The output at each time step is the hidden state $h_t$. The output of the layer has shape $(N, T, n_{hidden})$ for a batch size $N$ and sequence length $T$.
+
+#### Backpropagation Through Time (BPTT)
+
+The backward pass propagates gradients back through time, from the last step $T$ to the first step $1$.
+
+At step $t$, the total gradient of the loss with respect to the hidden state $h_t$ is the sum of the gradient coming from the layer above ($dA_t$) and the gradient coming from the future step $t+1$ ($dh_{next}$):
+
+$$dh_t = dA_t + dh_{next}$$
+
+The gradient of the pre-activation $Z_t$ is:
+
+$$dZ_t = dh_t \odot \tanh'(Z_t) = dh_t \odot (1 - h_t^2)$$
+
+Using $dZ_t$, we accumulate the parameter gradients over the sequence length $T$:
+
+$$dW_{hx} = \sum_{t=1}^T x_t^T dZ_t$$
+$$dW_{hh} = \sum_{t=1}^T h_{t-1}^T dZ_t$$
+$$db = \sum_{t=1}^T \sum_{i=1}^N (dZ_t)_i$$
+
+The gradient to be propagated to the input at step $t$ is:
+
+$$dx_t = dZ_t W_{hx}^T$$
+
+And the gradient to be propagated to the previous hidden state (back in time) is:
+
+$$dh_{next\_prev} = dZ_t W_{hh}^T$$
+
+#### Gradient Clipping
+
+To prevent the vanishing/exploding gradient problem common in RNNs, parameter gradients are clipped element-wise to the range $[-5.0, 5.0]$ before updating:
+
+$$g \leftarrow \max(\min(g, 5.0), -5.0) \quad \text{for } g \in \{dW_{hx}, dW_{hh}, db\}$$
 
 ---
 
@@ -455,6 +514,60 @@ $$\text{relative error} = \frac{\|g_{analytical} - g_{numerical}\|}{\|g_{analyti
 
 The gradient checker uses `hasattr` to skip layers without learnable parameters (`FlattenLayer`, `PoolingLayer`), and works with all layer types including `ConvLayer`.
 
+## Interactive Applications & Experiments
+
+This project includes interactive applications and more complex training scripts to test the modular components.
+
+### 1. Interactive Drawing App (`app_draw.py`)
+
+A real-time handwritten digit recognition application built using **Streamlit**.
+
+- **Workflow:**
+  1. Loads a pre-trained MNIST CNN model (`models/cnn_mnist.pkl`).
+  2. Renders a canvas where the user can draw a digit (0–9).
+  3. Preprocesses the drawn canvas image: converts RGBA to grayscale, resizes to $28 \times 28$ pixels using OpenCV, normalizes to $[0, 1]$, and shapes into a batch of size 1: `(1, 1, 28, 28)`.
+  4. Runs a forward pass through the CNN.
+  5. Displays the predicted digit, the model's confidence percentage, and a bar chart showing the probability distribution over all classes.
+- **Run the app:**
+  ```bash
+  streamlit run app_draw.py
+  ```
+
+### 2. Character-Level Text Generation (`experiments/train_rnn.py`)
+
+Uses a Recurrent Neural Network (RNN) to learn character patterns and generate new text.
+
+- **Utilities (`utils.py`):** Includes a `CharTokenizer` that fits a vocabulary from a raw text dataset, maps characters to integers bidirectional, constructs sequence sliding windows (`X` and `Y` shifted by 1), and generates 3D one-hot tensors.
+- **Network:** An `RNNLayer` (64 hidden units) followed by a Dense classification `Layer` with `Softmax` activation.
+- **Sampling Strategy:** Uses statistical sampling (`np.random.choice` based on output probabilities) rather than argmax to prevent the network from getting stuck in repetitive loops.
+- **Run the training:**
+  ```bash
+  python3 -m experiments.train_rnn
+  ```
+
+### 3. CIFAR-10 Classification CNN (`experiments/train_cifar10.py`)
+
+A training script demonstrating a larger convolutional network trained on the 10-class CIFAR-10 dataset (RGB color images of size $3 \times 32 \times 32$).
+
+- **Architecture:**
+  `Conv(3→32, 3x3) -> MaxPool(2) -> Conv(32→64, 3x3) -> MaxPool(2) -> Conv(64→128, 3x3) -> MaxPool(2) -> Flatten -> Dense(256, ReLU) -> Dense(10, Softmax)`
+- **Features:** Supports automated scikit-learn dataset download or loading the official dataset binary batches. Outputs validation accuracy, loss curves, confusion matrices, and per-class accuracy plots to `experiments/plots/cifar10/`.
+- **Run the training:**
+  ```bash
+  python3 -m experiments.train_cifar10
+  ```
+
+### 4. Feature & Filter Visualization (`experiments/visualize_features.py`)
+
+Inspects what the network has learned by visualizing convolutional layers.
+
+- **Filter Visualizer:** Plots the learned $3 \times 3$ weights of the first convolutional layer as matrices using a divergent colormap (`RdBu`), exposing edge-detectors.
+- **Activation Maps:** Passes a sample image (e.g., MNIST digit) and extracts the 8 resulting feature maps from `ConvLayer` to visually inspect what pixel regions activate the filters.
+- **Run the script:**
+  ```bash
+  python3 -m experiments.visualize_features
+  ```
+
 ---
 
 ## Roadmap
@@ -464,7 +577,7 @@ The gradient checker uses `hasattr` to skip layers without learnable parameters 
 - [x] Dense layer with forward and backward
 - [x] NeuralNetwork class with mini-batch training
 - [x] XOR experiment
-- [x] Gradient checking
+- [x] Gradient checking (including CNN/RNN backward checks)
 - [x] MNIST with dense layers (97.61% test accuracy)
 - [x] FlattenLayer
 - [x] PoolingLayer (Max Pooling)
@@ -473,6 +586,11 @@ The gradient checker uses `hasattr` to skip layers without learnable parameters 
 - [x] Adam optimizer
 - [x] SGD vs Adam comparison experiment
 - [x] Save and load weights
+- [x] Recurrent Neural Network (RNNLayer & BPTT)
+- [x] Text generation (Char-level RNN)
+- [x] CNN on CIFAR-10 dataset
+- [x] Feature/filter visualization (CNN weights & activations)
+- [x] Interactive digit drawing web app (Streamlit)
 - [ ] Regularization (L2, Dropout)
 - [ ] Learning rate scheduling
 - [ ] Batch Normalization
