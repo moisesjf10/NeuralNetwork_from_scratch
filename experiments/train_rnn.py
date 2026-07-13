@@ -1,6 +1,6 @@
 import numpy as np
 from network import NeuralNetwork
-from layers import Layer, RNNLayer
+from layers import Layer, RNNLayer, EmbeddingLayer
 from activations import Softmax
 from losses import CategoricalCrossEntropy
 from utils import CharTokenizer
@@ -14,11 +14,12 @@ def generate_text(model, tokenizer, seed, length=50):
     
     for _ in range(length):
         # Encode the text generated so far
-        indices = tokenizer.encode(generated_text)
-        one_hot_matrix = tokenizer.to_one_hot(indices)
+        idx = tokenizer.encode(generated_text)
+        #now we use a embedding layer
+        #one_hot_matrix = tokenizer.to_one_hot(indices)
         
         # Add the Batch dimension: (1, Time, Vocabulary)
-        X = np.expand_dims(one_hot_matrix, axis=0)
+        X = np.array([idx])
         
         # Pass the sequence through the neural network
         predictions = model.forward(X)
@@ -26,9 +27,12 @@ def generate_text(model, tokenizer, seed, length=50):
         # Extract the probabilities of the last predicted character
         # predictions.shape is (1, Time, Vocabulary)
         last_char_probs = predictions[0, -1, :]
+
+        temperature = 1.0  # Adjust this value to control randomness
+        scaled_probs = np.power(last_char_probs + 1e-10, 1.0 / temperature)
         
         #stability trick: ensure probabilities sum to exactly 1.0
-        last_char_probs = last_char_probs / np.sum(last_char_probs)
+        last_char_probs = scaled_probs / np.sum(scaled_probs)
         
         # Statistical Sampling
         # Instead of always taking the character with the highest probability (argmax),
@@ -49,26 +53,33 @@ if __name__ == "__main__":
     print("=" * 50)
 
     # Toy Dataset (Repeated so it memorizes patterns quickly)
-    raw_text = "to be or not to be, that is the question. " * 20
+    raw_text="""artificial intelligence and deep learning are fascinating branches of mathematics and computer science. 
+an artificial neural network attempts to simulate human brain behavior using linear algebra and calculus operations. 
+at the heart of this mathematical engine, weight matrices multiply and gradients flow backward through time. 
+each iteration adjusts parameters to minimize the error.""" * 5
     
     # Tokenization
     tokenizer = CharTokenizer()
     tokenizer.fit(raw_text)
     vocab_size = tokenizer.vocab_size
     
-    seq_length = 15
+    seq_length = 25
     print(f"\nGenerating sliding windows of size {seq_length}...")
+    # create_dataset returns 3D One-Hot tensors by default
     X_train, Y_train = tokenizer.create_dataset(raw_text, seq_length=seq_length, stride=2)
+    X_train = np.argmax(X_train, axis=-1)
+
+    embedding_dimension = 64
+    hidden_size = 128
     
-    # Model Construction
-    # - Input: character matrix (vocab_size)
-    # - RNN Memory: 64 temporal context neurons
-    # - Dense Output: projects from 64 to vocab_size using Softmax
-    hidden_size = 64
-    
+    # Model Setup
+    # EmbeddingLayer: Projects discrete token IDs into continuous vectors.
+    # RNN Layer: Processes sequential memory (input_size must match embedding_dim).
+    # Dense Layer: Maps hidden states back to vocabulary distribution via Softmax.
     model = NeuralNetwork(
         layers=[
-            RNNLayer(input_size=vocab_size, hidden_size=hidden_size),
+            EmbeddingLayer(vocab_size=vocab_size, embedding_dim=embedding_dimension),
+            RNNLayer(input_size=embedding_dimension, hidden_size=hidden_size),
             Layer(n_inputs=hidden_size, n_neurons=vocab_size, activation=Softmax())
         ],
         loss=CategoricalCrossEntropy()
@@ -76,19 +87,18 @@ if __name__ == "__main__":
     
     #Test the untrained model
     print("\n--- Generated Text BEFORE Training ---")
-    seed = "to be "
+    seed = "the network "
     print(generate_text(model, tokenizer, seed, length=40))
     print("-" * 40)
     
     # Training
     print("\nStarting training (BPTT)...")
     # Use a small Batch Size and an aggressive Learning Rate for this quick test
-    loss_history = model.train(X_train, Y_train, epochs=100, lr=0.1, batch_size=16)
+    loss_history = model.train(X_train, Y_train, epochs=100, lr=0.01, batch_size=32)
     
     # Test the trained model
     print("\n--- Generated Text AFTER Training ---")
-    seed = "to be "
-    print(generate_text(model, tokenizer, seed, length=40))
+    print(generate_text(model, tokenizer, seed, length=80))
     print("-" * 40)
     
     print(f"\nInitial Loss: {loss_history[0]:.4f} -> Final Loss: {loss_history[-1]:.4f}")
