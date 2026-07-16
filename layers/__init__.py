@@ -4,3 +4,8 @@ from layers.pooling import PoolingLayer
 from layers.conv import ConvLayer
 from layers.rnn import RNNLayer
 from layers.embedding import EmbeddingLayer
+from layers.multihead_attention import MultiHeadAttention
+from layers.layernorm import LayerNorm
+from layers.positional_encoding import PositionalEncoding
+from layers.transformer_block import TransformerBlock
+

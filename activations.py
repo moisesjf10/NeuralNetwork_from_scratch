@@ -22,7 +22,7 @@ class ReLU:
 
 class Tanh:
     def __call__(self, x):
-        """Compute hiperbolic tangent of x"""
+        """Compute hyperbolic tangent of x"""
         return np.tanh(x)
 
     def derivative(self, x):
@@ -57,13 +57,12 @@ class Softmax:
         """
         return np.ones_like(Z)
 
-class Tanh:
+class Linear:
     def __call__(self, x):
-        """Compute hyperbolic tangent of X"""
-        return np.tanh(x)
+        """Returns the input as is (Identity function)"""
+        return x
     
     def derivative(self, x):
-        """Compute the derivative of tanh in X"""
-        return 1 - self(x)**2
-
+        """The derivative of f(x) = x is 1"""
+        return np.ones_like(x)
 

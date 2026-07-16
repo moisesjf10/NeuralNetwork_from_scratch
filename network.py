@@ -3,7 +3,6 @@ from activations import ReLU, Sigmoid, Tanh
 from layers import Layer
 import pickle
 
-
 class NeuralNetwork:
     def __init__(self, layers, loss):
         """
@@ -11,10 +10,27 @@ class NeuralNetwork:
         """
         self.layers = layers
         self.loss = loss
+        
+    def _get_all_parameters_layers(self):
+        """
+        Recursively extracts all layers and sub-layers from composite blocks 
+        (like TransformerBlock or PositionwiseFeedForward) to ensure the 
+        optimizer finds every learnable parameter.
+        """
+        all_layers = []
+        def extract_layers(layer_list):
+            for layer in layer_list:
+                if hasattr(layer, 'sub_layers'):
+                    extract_layers(layer.sub_layers)
+                else:
+                    all_layers.append(layer)
+                    
+        extract_layers(self.layers)
+        return all_layers
     
     def forward(self, X):
         """
-        Propagates the input forward through all layers sequentially.
+        Propagates the input forward through all base layers sequentially.
         """
         y_pred = X
         for l in self.layers:
@@ -24,7 +40,7 @@ class NeuralNetwork:
     def backward(self, y_pred, y_true):
         """
         Computes the loss derivative and propagates the gradients backward
-        through all layers in reverse order. Returns the scalar loss value.
+        through all base layers in reverse order.
         """
         loss_value = self.loss(y_pred, y_true)
         grad = self.loss.derivative(y_pred, y_true)
@@ -36,34 +52,41 @@ class NeuralNetwork:
 
     def update(self, lr):
         """
-        Applies Vanilla Stochastic Gradient Descent (SGD) to all learnable
-        parameters across different layer architectures safely.
+        Applies Vanilla Stochastic Gradient Descent (SGD) to all learnable parameters.
         """
-        for l in self.layers:
-            # Standard weights (Dense, Conv, Embedding Layer)
+        # IMPORTANT: We use the recursively extracted list of all layers to ensure that even nested sub-layers are updated.
+        for l in self._get_all_parameters_layers():
+            
+            # Standard weights & biases
             if hasattr(l, 'W') and hasattr(l, 'dW') and l.W is not None:
                 l.W -= lr * l.dW
-                
-            # Standard biases (Dense, Conv)
             if hasattr(l, 'b') and hasattr(l, 'db') and l.b is not None:
                 l.b -= lr * l.db
                 
-            # RNN specific hidden-to-input weights
+            # Attention weights
+            for suffix in ['q', 'k', 'v', 'o']:
+                W_attr = f'W_{suffix}'
+                dW_attr = f'dW_{suffix}'
+                if hasattr(l, W_attr) and hasattr(l, dW_attr) and getattr(l, W_attr) is not None:
+                    setattr(l, W_attr, getattr(l, W_attr) - lr * getattr(l, dW_attr))
+                
+            # RNN specific weights
             if hasattr(l, 'W_hx') and hasattr(l, 'dW_hx'):
                 l.W_hx -= lr * l.dW_hx
-                
-            # RNN specific hidden-to-hidden weights
             if hasattr(l, 'W_hh') and hasattr(l, 'dW_hh'):
                 l.W_hh -= lr * l.dW_hh
+            
+            # LayerNorm parameters
+            if hasattr(l, 'gamma') and hasattr(l, 'dgamma') and l.gamma is not None:
+                l.gamma -= lr * l.dgamma
+            if hasattr(l, 'beta') and hasattr(l, 'dbeta') and l.beta is not None:
+                l.beta -= lr * l.dbeta
         
     def train(self, X, y, epochs, lr, batch_size=32, optimizer=None):
-        """
-        Main training optimization loop using mini-batching.
-        """
+        """Main training optimization loop using mini-batching."""
         losses_epoch = []
         for epoch in range(epochs):
             loss_epoch = 0
-            # Shuffle and partition data into batches
             X_batches, y_batches = self.create_batches(X, y, batch_size=batch_size)
 
             for X_batch, y_batch in zip(X_batches, y_batches):
@@ -72,8 +95,8 @@ class NeuralNetwork:
                 loss_epoch += self.backward(y_pred, y_batch)
                 
                 if optimizer is not None:
-                    optimizer.step(self.layers)
-                else: # Fallback to default SGD
+                    optimizer.step(self._get_all_parameters_layers())
+                else: 
                     self.update(lr)
             
             epoch_avg_loss = loss_epoch / len(X_batches)
@@ -83,9 +106,6 @@ class NeuralNetwork:
         return losses_epoch
     
     def create_batches(self, X, y, batch_size):
-        """
-        Shuffles the dataset and shards it into discrete mini-batches.
-        """
         indices = np.arange(X.shape[0])
         np.random.shuffle(indices)
         X_shuffled = X[indices]
@@ -97,40 +117,26 @@ class NeuralNetwork:
         return X_batches, y_batches
     
     def zero_grad(self):
-        """
-        Resets all parameter gradient accumulations to zero before every batch pass.
-        Using .fill(0) updates the array elements in place, maximizing memory efficiency.
-        """
-        for layer in self.layers:
-            if hasattr(layer, 'dW') and layer.dW is not None:
-                layer.dW.fill(0)
-            if hasattr(layer, 'db') and layer.db is not None:
-                layer.db.fill(0)
-            if hasattr(layer, 'dW_hx') and layer.dW_hx is not None:
-                layer.dW_hx.fill(0)
-            if hasattr(layer, 'dW_hh') and layer.dW_hh is not None:
-                layer.dW_hh.fill(0)
+        """Resets all parameter gradient accumulations to zero."""
+        for layer in self._get_all_parameters_layers():
+            attributes_to_zero = ['dW', 'db', 'dW_hx', 'dW_hh', 'dgamma', 'dbeta', 
+                                  'dW_q', 'dW_k', 'dW_v', 'dW_o']
+            for attr in attributes_to_zero:
+                if hasattr(layer, attr) and getattr(layer, attr) is not None:
+                    getattr(layer, attr).fill(0)
     
     def save_weights(self, filepath):
-        """
-        Dynamically extracts and serializes any active learnable weights present 
-        in each layer to a binary file via pickle.
-        """
+        """Serializes all active learnable weights to a binary file via pickle."""
         model_state = []
-        for layer in self.layers:
+        for layer in self._get_all_parameters_layers():
             layer_state = {}
             
-            # Extract standard parameters if they exist
-            if hasattr(layer, 'W') and layer.W is not None:
-                layer_state['W'] = layer.W
-            if hasattr(layer, 'b') and layer.b is not None:
-                layer_state['b'] = layer.b
-                
-            # Extract recurrent parameters if they exist
-            if hasattr(layer, 'W_hx') and layer.W_hx is not None:
-                layer_state['W_hx'] = layer.W_hx
-            if hasattr(layer, 'W_hh') and layer.W_hh is not None:
-                layer_state['W_hh'] = layer.W_hh
+            attributes_to_save = ['W', 'b', 'W_hx', 'W_hh', 'gamma', 'beta', 
+                                  'W_q', 'W_k', 'W_v', 'W_o']
+            
+            for attr in attributes_to_save:
+                if hasattr(layer, attr) and getattr(layer, attr) is not None:
+                    layer_state[attr] = getattr(layer, attr)
             
             model_state.append(layer_state if layer_state else None)
                 
@@ -139,20 +145,19 @@ class NeuralNetwork:
         print(f"Weights successfully saved to: {filepath}")
 
     def load_weights(self, filepath):
-        """
-        Loads weight states and re-assigns parameter matrices safely based on 
-        saved dictionary keys.
-        """
+        """Loads weight states and re-assigns parameter matrices."""
         with open(filepath, 'rb') as f:
             model_state = pickle.load(f)
             
-        for i, layer in enumerate(self.layers):
+        flat_layers = self._get_all_parameters_layers()
+        
+        for i, layer in enumerate(flat_layers):
             state = model_state[i]
             if state is not None:
-                if 'W' in state: layer.W = state['W']
-                if 'b' in state: layer.b = state['b']
-                if 'W_hx' in state: layer.W_hx = state['W_hx']
-                if 'W_hh' in state: layer.W_hh = state['W_hh']
-                
+                for key, val in state.items():
+                    if hasattr(layer, key):
+                        setattr(layer, key, val)
+                        
         print(f"Weights successfully loaded from: {filepath}")
-        
+
+    
