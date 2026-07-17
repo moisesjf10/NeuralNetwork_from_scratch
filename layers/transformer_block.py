@@ -1,5 +1,5 @@
 from activations import ReLU, Linear
-from layers import Layer
+from layers import Layer, LayerNorm, MultiHeadAttention
 
 class PositionwiseFeedForward:
     def __init__(self, d_model, d_ff):

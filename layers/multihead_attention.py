@@ -60,6 +60,14 @@ class MultiHeadAttention:
         # Scaled Dot-Product Attention
         # Q @ K^T: (B, H, T, d_k) @ (B, H, d_k, T) -> (B, H, T, T)
         scores = (Q @ K.transpose(0, 1, 3, 2)) / self.scale
+
+        # Create a boolean upper triangular matrix: True where j > i
+        mask = np.triu(np.ones((T, T)), k=1)  # Shape: (T, T)
+        # Subtract a huge value from masked positions so exp(-1e9) becomes 0
+        # NumPy broadcasting automatically extends (T, T) to (B, H, T, T)
+        scores = scores - (mask * 1e9)
+
+        #Softmax weights (Masked values will receive exactly 0% attention)
         A = self._softmax(scores, axis=-1)
         
         # Context Vector calculation

@@ -50,37 +50,41 @@ class NeuralNetwork:
             
         return loss_value
 
-    def update(self, lr):
+    def update(self, lr, clip_value=1.0):
         """
-        Applies Vanilla Stochastic Gradient Descent (SGD) to all learnable parameters.
+        Applies SGD with Gradient Clipping to prevent exploding gradients.
         """
-        # IMPORTANT: We use the recursively extracted list of all layers to ensure that even nested sub-layers are updated.
+        # Función auxiliar para aplicar el límite
+        def clip(grad):
+            if grad is None: return None
+            return np.clip(grad, -clip_value, clip_value)
+
         for l in self._get_all_parameters_layers():
             
             # Standard weights & biases
             if hasattr(l, 'W') and hasattr(l, 'dW') and l.W is not None:
-                l.W -= lr * l.dW
+                l.W -= lr * clip(l.dW)
             if hasattr(l, 'b') and hasattr(l, 'db') and l.b is not None:
-                l.b -= lr * l.db
+                l.b -= lr * clip(l.db)
                 
             # Attention weights
             for suffix in ['q', 'k', 'v', 'o']:
                 W_attr = f'W_{suffix}'
                 dW_attr = f'dW_{suffix}'
                 if hasattr(l, W_attr) and hasattr(l, dW_attr) and getattr(l, W_attr) is not None:
-                    setattr(l, W_attr, getattr(l, W_attr) - lr * getattr(l, dW_attr))
+                    setattr(l, W_attr, getattr(l, W_attr) - lr * clip(getattr(l, dW_attr)))
                 
             # RNN specific weights
             if hasattr(l, 'W_hx') and hasattr(l, 'dW_hx'):
-                l.W_hx -= lr * l.dW_hx
+                l.W_hx -= lr * clip(l.dW_hx)
             if hasattr(l, 'W_hh') and hasattr(l, 'dW_hh'):
-                l.W_hh -= lr * l.dW_hh
+                l.W_hh -= lr * clip(l.dW_hh)
             
             # LayerNorm parameters
             if hasattr(l, 'gamma') and hasattr(l, 'dgamma') and l.gamma is not None:
-                l.gamma -= lr * l.dgamma
+                l.gamma -= lr * clip(l.dgamma)
             if hasattr(l, 'beta') and hasattr(l, 'dbeta') and l.beta is not None:
-                l.beta -= lr * l.dbeta
+                l.beta -= lr * clip(l.dbeta)
         
     def train(self, X, y, epochs, lr, batch_size=32, optimizer=None):
         """Main training optimization loop using mini-batching."""
