@@ -15,14 +15,19 @@ neural_net/
 ├── losses.py               # Loss functions and their derivatives
 ├── network.py              # NeuralNetwork class
 ├── optimizers.py           # Adam optimizer (SGD is built-in)
-├── utils.py                # CharTokenizer and data utilities
+├── utils.py                # CharTokenizer, BPETokenizer, and data utilities
 ├── layers/
 │   ├── __init__.py         # Package exports
 │   ├── dense.py            # Fully connected layer (supporting 3D sequential input)
 │   ├── flatten.py          # FlattenLayer
 │   ├── pooling.py          # PoolingLayer (Max Pooling)
 │   ├── conv.py             # ConvLayer (im2col / col2im)
-│   └── rnn.py              # RNNLayer with Backpropagation Through Time
+│   ├── rnn.py              # RNNLayer with Backpropagation Through Time
+│   ├── embedding.py        # EmbeddingLayer with sparse gradient accumulation
+│   ├── positional_encoding.py # Sinusoidal Positional Encoding
+│   ├── layernorm.py        # Layer Normalization (LayerNorm)
+│   ├── multihead_attention.py # MultiHeadAttention with causal masking and 4D backprop
+│   └── transformer_block.py # TransformerBlock and PositionwiseFeedForward
 ├── models/                 # Saved weights (.pkl / .npz)
 └── experiments/
     ├── test.py                 # Full test suite (19 tests: Dense, CNN, RNN)
@@ -31,6 +36,8 @@ neural_net/
     ├── train_mnist_compare.py  # SGD vs Adam comparison
     ├── train_cifar10.py        # 3-layer CNN on CIFAR-10
     ├── train_rnn.py            # Character-level RNN text generation
+    ├── train_llm.py            # Character-level Transformer text generation
+    ├── train_llm_bpe.py        # BPE-level Transformer text generation with Adam
     ├── visualize_features.py   # Filters and activation maps visualizer
     └── plots/                  # Generated plots
 ```
@@ -466,6 +473,168 @@ $$g \leftarrow \max(\min(g, 5.0), -5.0) \quad \text{for } g \in \{dW_{hx}, dW_{h
 
 ---
 
+### 10. Transformer Architecture (LLMs)
+
+Unlike recurrent networks that process sequence elements step-by-step, the Transformer architecture processes entire sequences in parallel. It uses self-attention to draw global dependencies, bypassing recurrence entirely. Below are the technical and mathematical details of the modules implemented in the project.
+
+#### 10.1 Embedding Layer (`layers/embedding.py`)
+
+The `EmbeddingLayer` acts as a lookup table mapping discrete token IDs (categories) into dense continuous vector space.
+
+*   **Initialization (`__init__(self, vocab_size, embedding_dim)`):**
+    *   `vocab_size` ($V$): Total number of unique tokens/characters in the vocabulary.
+    *   `embedding_dim` ($D$): The size of the dense continuous vector space.
+    *   `W` (Parameters): Weight lookup table of shape `(vocab_size, embedding_dim)`. Initialized with a small random normal distribution scaled by $0.01$: `np.random.randn(vocab_size, embedding_dim) * 0.01`.
+    *   `dW` (Gradients): Gradient accumulator array of shape `(vocab_size, embedding_dim)`.
+*   **Forward Pass (`forward(self, X)`):**
+    *   Input `X`: Matrix of integer token IDs of shape `(Batch_Size, Time_Steps)`.
+    *   Output: 3D Continuous Dense Tensor of shape `(Batch_Size, Time_Steps, Embedding_Dim)`.
+    *   **Implementation Detail:** Mathematically, this projection is equivalent to $E = X_{\text{one-hot}} W$. However, a sparse matrix multiplication is computationally inefficient. Instead, we use NumPy's advanced indexing `self.W[X]` to retrieve the rows in $O(1)$ time, bypassing floating-point operations.
+*   **Backward Pass (`backward(self, dA)`):**
+    *   Input `dA`: Upstream gradient of shape `(Batch_Size, Time_Steps, Embedding_Dim)`.
+    *   Output: `None`. Since inputs are discrete integers (non-differentiable space), the gradient flow terminates at this layer.
+    *   **Sparse Gradient Accumulation:** To compute `dW`, we sum all incoming gradients matching the respective token positions. Because a token can occur multiple times in the input `X`, we must accumulate these gradients atomically. Using direct assignment (`self.dW[self.inputs] += dA`) fails due to NumPy's internal memory buffering, which overwrites duplicate indices. We resolve this by using `np.add.at(self.dW, self.inputs, dA)`, which guarantees an unbuffered, sequential sum:
+        $$dW_k = \sum_{\{b, t \mid X_{b, t} = k\}} dA_{b, t}$$
+
+#### 10.2 Positional Encoding (`layers/positional_encoding.py`)
+
+Since self-attention is permutation-invariant, it is blind to sequence order. Sinusoidal positional encoding injects positional coordinates by adding a static wave-like signal to the input embeddings.
+
+*   **Initialization (`__init__(self, max_seq_length, embedding_dim)`):**
+    *   `max_seq_length`: The maximum length of a sequence the model will support.
+    *   `embedding_dim` ($D$): Dimension of features, matching the upstream `EmbeddingLayer`.
+    *   `pe`: Static matrix of shape `(max_seq_length, embedding_dim)` containing precomputed values:
+        $$PE(pos, 2i) = \sin\left(pos \cdot e^{-2i \cdot \frac{\ln(10000)}{D}}\right)$$
+        $$PE(pos, 2i+1) = \cos\left(pos \cdot e^{-2i \cdot \frac{\ln(10000)}{D}}\right)$$
+        where $pos$ is the sequence position index ($0 \dots \text{max\_seq\_length}-1$), and $2i$ / $2i+1$ are the even/odd feature dimensions.
+*   **Forward Pass (`forward(self, X)`):**
+    *   Input `X`: Shape `(Batch_Size, Time_Steps, Embedding_Dim)`.
+    *   Output: Shape `(Batch_Size, Time_Steps, Embedding_Dim)`.
+    *   **Implementation Detail:** Slices the pre-computed table to match the current sequence length and broadcasts the addition across the batch dimension:
+        $$Z = X + PE_{:T, :}$$
+*   **Backward Pass (`backward(self, dA)`):**
+    *   Input `dA`: Upstream gradient of shape `(Batch_Size, Time_Steps, Embedding_Dim)`.
+    *   Output: `dA`. Since the operation is a simple addition of a constant ($Z = X + C$), the partial derivative $\frac{\partial Z}{\partial X} = 1$, so gradients flow backwards completely unchanged.
+
+#### 10.3 Layer Normalization (`layers/layernorm.py`)
+
+`LayerNorm` stabilizes the hidden activations of deep networks by standardizing the features of each sequence element (token representation) to have zero mean and unit variance.
+
+*   **Initialization (`__init__(self, embedding_dim, epsilon=1e-5)`):**
+    *   `embedding_dim` ($D$): The dimension of the feature vectors.
+    *   `gamma` (Parameters): Trainable scale parameter of shape `(embedding_dim,)`. Initialized to ones.
+    *   `beta` (Parameters): Trainable shift parameter of shape `(embedding_dim,)`. Initialized to zeros.
+    *   `dgamma`, `dbeta` (Gradients): Gradient arrays matching parameter shapes.
+*   **Forward Pass (`forward(self, X)`):**
+    *   Input `X`: Shape `(Batch_Size, Time_Steps, Embedding_Dim)`.
+    *   Output: Shape `(Batch_Size, Time_Steps, Embedding_Dim)`.
+    *   **Computation:** Computes mean $\mu$ and variance $\sigma^2$ along the last dimension ($D$) with `keepdims=True` (shape `(B, T, 1)`):
+        $$\mu_{b,t} = \frac{1}{D} \sum_{i=1}^D X_{b,t,i} \qquad \sigma^2_{b,t} = \frac{1}{D} \sum_{i=1}^D (X_{b,t,i} - \mu_{b,t})^2$$
+        $$\hat{X}_{b,t} = \frac{X_{b,t} - \mu_{b,t}}{\sqrt{\sigma^2_{b,t} + \epsilon}}$$
+        $$Y_{b,t} = \gamma \odot \hat{X}_{b,t} + \beta$$
+        where $\epsilon = 10^{-5}$ prevents division by zero.
+*   **Backward Pass (`backward(self, d_out)`):**
+    *   Input `d_out`: Shape `(Batch_Size, Time_Steps, Embedding_Dim)`.
+    *   Output `dX`: Shape `(Batch_Size, Time_Steps, Embedding_Dim)`.
+    *   **Parameter Gradients:** Summed across batch and time dimensions since scale and shift are shared across all tokens:
+        $$d\gamma = \sum_{b=1}^B \sum_{t=1}^T dY_{b,t} \odot \hat{X}_{b,t} \qquad d\beta = \sum_{b=1}^B \sum_{t=1}^T dY_{b,t}$$
+    *   **Input Gradient:** Analytical simplification of the backward pass through standard deviation and mean computations:
+        $$dX\_norm = d\_out \odot \gamma$$
+        $$dX = \frac{1}{D \cdot std} \left[ D \cdot dX\_norm - \sum_{k=1}^D dX\_norm_k - \hat{X} \odot \sum_{k=1}^D (dX\_norm_k \odot \hat{X}_k) \right]$$
+        where the sums $\sum_{k=1}^D$ are computed along the last axis (`axis=-1, keepdims=True`).
+
+#### 10.4 Causal Multi-Head Self-Attention (`layers/multihead_attention.py`)
+
+Causal Multi-Head Self-Attention maps queries, keys, and values to compute contextual representations, using a causal mask to enforce autoregressive generation (tokens cannot attend to future positions).
+
+*   **Initialization (`__init__(self, embedding_dim, num_heads)`):**
+    *   `embedding_dim` ($D$): Total dimension of the model.
+    *   `num_heads` ($H$): Number of parallel attention heads (must be a divisor of $D$).
+    *   `d_k`: Key dimension per head ($d_k = D / H$).
+    *   `W_q`, `W_k`, `W_v` (Parameters): Projection weight matrices of shape `(Embedding_Dim, Embedding_Dim)`.
+    *   `W_o` (Parameters): Output projection weight matrix of shape `(Embedding_Dim, Embedding_Dim)`.
+    *   All weights are initialized with Xavier/Glorot Normal distribution: standard deviation $sd = \sqrt{\frac{2}{D + D}}$.
+    *   `dW_q`, `dW_k`, `dW_v`, `dW_o` (Gradients): Parameter gradient accumulators.
+*   **Forward Pass (`forward(self, X)`):**
+    *   Input `X`: Shape `(Batch_Size, Time_Steps, Embedding_Dim)`.
+    *   Output `Z`: Shape `(Batch_Size, Time_Steps, Embedding_Dim)`.
+    *   **Sequence of Operations:**
+        1.  *Projection:* Project inputs to query, key, and value vectors:
+            $$Q = X W_q \qquad K = X W_k \qquad V = X W_v \quad \text{shape: } (B, T, D)$$
+        2.  *Multi-Head Split:* Split vectors across $H$ heads, transposing to group batch and head indices:
+            $$Q_{split} = \text{transpose}(Q\text{.reshape}(B, T, H, d_k), \text{axes}=[0, 2, 1, 3]) \quad \text{shape: } (B, H, T, d_k)$$
+            Same layout applies to $K_{split}$ and $V_{split}$.
+        3.  *Scaled Dot-Product:* Calculate raw attention scores between queries and keys:
+            $$\text{scores} = \frac{Q_{split} K_{split}^T}{\sqrt{d_k}} \quad \text{shape: } (B, H, T, T)$$
+        4.  *Causal Masking:* Apply an upper triangular matrix mask (offset by $k=1$) to mask out elements where sequence index $j > i$. Causal positions receive an additive penalty of $-10^9$, which collapses to zero attention during Softmax:
+            $$\text{scores}_{b,h,i,j} = \text{scores}_{b,h,i,j} - 10^9 \cdot \mathbb{1}[j > i]$$
+        5.  *Attention Weights:* Compute normalized probabilities:
+            $$A = \text{softmax}(\text{scores}, \text{axis}=-1) \quad \text{shape: } (B, H, T, T)$$
+        6.  *Context Aggregation:* Compute weighted sum of values:
+            $$\text{context} = A V_{split} \quad \text{shape: } (B, H, T, d_k)$$
+        7.  *Concatenation:* Merge head outputs and project back to standard dimension:
+            $$\text{context\_concat} = \text{transpose}(\text{context}, [0, 2, 1, 3])\text{.reshape}(B, T, D)$$
+            $$Z = \text{context\_concat} W_o \quad \text{shape: } (B, T, D)$$
+*   **Backward Pass (`backward(self, dZ)`):**
+    *   Input `dZ`: Upstream gradient of shape `(Batch_Size, Time_Steps, Embedding_Dim)`.
+    *   Output `dX`: Downstream gradient of shape `(Batch_Size, Time_Steps, Embedding_Dim)`.
+    *   **Computation (4D Backpropagation):**
+        1.  *Output Projection Gradients:*
+            $$dZ\_flat = dZ\text{.reshape}(B \cdot T, D) \qquad \text{context\_flat} = \text{context\_concat}\text{.reshape}(B \cdot T, D)$$
+            $$dW_o = \text{context\_flat}^T \cdot dZ\_flat \qquad d\_context\_concat = dZ \cdot W_o^T$$
+        2.  *Reverting Multi-Head Concatenation:*
+            $$d\_context = \text{transpose}(d\_context\_concat\text{.reshape}(B, T, H, d_k), [0, 2, 1, 3]) \quad \text{shape: } (B, H, T, d_k)$$
+        3.  *Attention Value Gradients:*
+            $$dV_{split} = A^T \cdot d\_context \quad \text{shape: } (B, H, T, d_k)$$
+            $$dA = d\_context \cdot V_{split}^T \quad \text{shape: } (B, H, T, T)$$
+        4.  *Softmax Derivative:*
+            $$d\_scores = \frac{1}{\sqrt{d_k}} \cdot A \odot \left( dA - \sum_{j=1}^T (dA_j \odot A_j) \right) \quad \text{shape: } (B, H, T, T)$$
+            where the sum and dot-products are calculated along the last axis `axis=-1`.
+        5.  *Attention Query & Key Gradients:*
+            $$dQ_{split} = d\_scores \cdot K_{split} \quad \text{shape: } (B, H, T, d_k)$$
+            $$dK_{split} = d\_scores^T \cdot Q_{split} \quad \text{shape: } (B, H, T, d_k)$$
+        6.  *Re-combining Heads & Input Projections:*
+            Flatten and reshape $dQ_{split}, dK_{split}, dV_{split}$ back to `(B, T, D)`:
+            $$dQ = \text{transpose}(dQ_{split}, [0, 2, 1, 3])\text{.reshape}(B \cdot T, D)$$
+            $$dK = \text{transpose}(dK_{split}, [0, 2, 1, 3])\text{.reshape}(B \cdot T, D)$$
+            $$dV = \text{transpose}(dV_{split}, [0, 2, 1, 3])\text{.reshape}(B \cdot T, D)$$
+            Compute weight matrix gradients (by flattening sequence dimension):
+            $$dW_q = X\_flat^T \cdot dQ \qquad dW_k = X\_flat^T \cdot dK \qquad dW_v = X\_flat^T \cdot dV$$
+            where `X_flat` has shape `(B * T, D)`.
+        7.  *Input Downstream Gradient:*
+            $$dX = dQ \cdot W_q^T + dK \cdot W_k^T + dV \cdot W_v^T \quad \text{shape: } (B, T, D)$$
+
+#### 10.5 Transformer Block (`layers/transformer_block.py`)
+
+A pre-LayerNorm Transformer Block combining normalization, self-attention, and a position-wise feed-forward network with residual skip connections.
+
+*   **Sub-components:**
+    *   `norm1`, `norm2`: Instances of `LayerNorm` with dimension `d_model`.
+    *   `attention`: An instance of `MultiHeadAttention`.
+    *   `ff`: An instance of `PositionwiseFeedForward`, containing:
+        *   `layer1`: A dense `Layer(d_model, d_ff, ReLU())`.
+        *   `layer2`: A dense `Layer(d_ff, d_model, Linear())`.
+*   **Forward Pass (`forward(self, X)`):**
+    *   Input `X`: Shape `(Batch_Size, Time_Steps, d_model)`.
+    *   Output: Shape `(Batch_Size, Time_Steps, d_model)`.
+    *   **Computation (Pre-LayerNorm Order):**
+        $$Z_1 = X + \text{attention.forward}(\text{norm1.forward}(X))$$
+        $$Z_2 = Z_1 + \text{ff.forward}(\text{norm2.forward}(Z_1))$$
+*   **Backward Pass (`backward(self, dZ2)`):**
+    *   Input `dZ2`: Upstream gradient of shape `(Batch_Size, Time_Steps, d_model)`.
+    *   Output `dX`: Downstream gradient of shape `(Batch_Size, Time_Steps, d_model)`.
+    *   **Residual Flow Computation:** Gradients are copied and flow through the residual branches, accumulating at the junctions:
+        1.  *Feed-Forward Backward:*
+            $$d\_ff = \text{ff.backward}(dZ2)$$
+            $$d\_norm2 = \text{norm2.backward}(d\_ff)$$
+            $$dZ1 = dZ2 + d\_norm2$$
+        2.  *Attention Backward:*
+            $$d\_attn = \text{attention.backward}(dZ1)$$
+            $$d\_norm1 = \text{norm1.backward}(d\_attn)$$
+            $$dX = dZ1 + d\_norm1$$
+
+---
+
 ## NeuralNetwork class
 
 The `NeuralNetwork` class orchestrates all layer types. All layer types (`Layer`, `ConvLayer`, `PoolingLayer`, `FlattenLayer`) share the same interface (`forward` and `backward`), so `NeuralNetwork` treats them uniformly. Layers without learnable parameters are skipped in `update` using `hasattr`.
@@ -568,6 +737,50 @@ Inspects what the network has learned by visualizing convolutional layers.
   python3 -m experiments.visualize_features
   ```
 
+### 5. Large Language Model (LLM) Training & BPE Tokenizer
+
+Two experiments demonstrating character-level and subword-level text generation using a NumPy-only Pre-LayerNorm Transformer, incorporating a custom subword tokenizer.
+
+#### 5.1 Byte-Pair Encoding (`BPETokenizer` in `utils.py`)
+
+Subword tokenization compresses a text sequence by representing frequent character strings under singular token IDs. The `BPETokenizer` class manages this vocabulary mapping.
+
+*   **Initialization (`__init__(self)`):**
+    *   `merges`: Dictionary mapping byte-coordinate tuples `(left_id, right_id) -> new_id`.
+    *   `vocab`: Dictionary mapping integer index IDs to byte literals `id -> bytes`.
+    *   `vocab_size`: Initialized to $256$ to represent basic UTF-8 characters.
+*   **Training (`train(self, text, vocab_size)`):**
+    1.  Encodes the training text into a list of elemental bytes (numbers 0 to 255).
+    2.  Iteratively searches for the most frequent adjacent pair of byte IDs in the corpus using helper `_get_stats`.
+    3.  Assigns a new token ID (`256 + i`) to this pair, registers the merge rule in `self.merges`, and updates `self.vocab` with the concatenated byte string.
+    4.  Replaces all occurrences of the pair in the byte list with the new token ID using `_merge`.
+    5.  Repeats the cycle until the vocabulary reaches the target `vocab_size`.
+*   **Encoding (`encode(self, text)`):**
+    *   Translates text to UTF-8 bytes and iteratively applies the learned `merges` in order of their occurrence during training (resolving conflicts by prioritizing the merge rule with the lowest target token ID).
+*   **Decoding (`decode(self, ids)`):**
+    *   Joins the dictionary bytes representing each token ID in `ids` and decodes them to a string. The decoding uses `errors='replace'` to safely handle invalid byte predictions from the model.
+*   **Dataset Prep (`create_dataset(self, text, seq_length, stride=1)`):**
+    *   Tokenizes the input text and constructs rolling sequence windows.
+    *   Returns sequence integer IDs `X` of shape `(Num_Windows, seq_length)` (passed directly to the Embedding Layer), and target sequences `Y` encoded as 3D One-Hot vectors of shape `(Num_Windows, seq_length, vocab_size)` (for CCE loss calculations).
+
+#### 5.2 Training Experiments (`train_llm.py` & `train_llm_bpe.py`)
+
+*   **Architectural Layout:**
+    $$\text{EmbeddingLayer}(V, D) \rightarrow \text{PositionalEncoding}(T, D) \rightarrow \text{TransformerBlock}(d\_model=D, heads=H, d\_ff) \times 2 \rightarrow \text{DenseLayer}(D, V, \text{Softmax})$$
+    where vocabulary size $V \approx 280$, sequence length $T = 32$, embedding size $D = 64$, attention heads $H = 4$, and feedforward dimension $d\_ff = 256$.
+*   **Optimization Loop:**
+    Trains using the adaptive moment estimation [Adam](file:///home/moisesjf10/GitHub/NN/optimizers.py#L12) optimizer (`lr=0.001`), saving trained weights to `transformer_weights.pkl` or `transformer_bpe_weights.pkl`.
+*   **Autoregressive Text Inference:**
+    Generates text by iteratively predicting the next token, appending it to the context, and rolling the window forward. To prevent repetitive text loops, inference uses a **Temperature Scaling** parameter:
+    $$P(x_i) = \frac{e^{z_i / T}}{\sum_{j=1}^V e^{z_j / T}}$$
+    *   `T = 0.2` (Strict/Low entropy): The distribution narrows, leading to highly deterministic, confident predictions.
+    *   `T = 0.8` (Creative/High entropy): The distribution flattens, introducing diversity and creativity.
+*   **Running Scripts:**
+    ```bash
+    python3 -m experiments.train_llm
+    python3 -m experiments.train_llm_bpe
+    ```
+
 ---
 
 ## Roadmap
@@ -591,6 +804,13 @@ Inspects what the network has learned by visualizing convolutional layers.
 - [x] CNN on CIFAR-10 dataset
 - [x] Feature/filter visualization (CNN weights & activations)
 - [x] Interactive digit drawing web app (Streamlit)
+- [x] Embedding Layer with sparse gradient accumulation (`np.add.at`)
+- [x] Sinusoidal Positional Encoding
+- [x] Layer Normalization (LayerNorm)
+- [x] Causal Multi-Head Self-Attention (4D backpropagation)
+- [x] Pre-LayerNorm Transformer Block & Position-wise FFN
+- [x] Byte-Pair Encoding Tokenizer (BPETokenizer)
+- [x] Autoregressive text generation with temperature scaling
 - [ ] Regularization (L2, Dropout)
 - [ ] Learning rate scheduling
 - [ ] Batch Normalization
