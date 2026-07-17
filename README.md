@@ -463,7 +463,7 @@ $$dx_t = dZ_t W_{hx}^T$$
 
 And the gradient to be propagated to the previous hidden state (back in time) is:
 
-$$dh_{next\_prev} = dZ_t W_{hh}^T$$
+$$dh_{\text{next-prev}} = dZ_t W_{hh}^T$$
 
 #### Gradient Clipping
 
@@ -539,8 +539,8 @@ Since self-attention is permutation-invariant, it is blind to sequence order. Si
     *   **Parameter Gradients:** Summed across batch and time dimensions since scale and shift are shared across all tokens:
         $$d\gamma = \sum_{b=1}^B \sum_{t=1}^T dY_{b,t} \odot \hat{X}_{b,t} \qquad d\beta = \sum_{b=1}^B \sum_{t=1}^T dY_{b,t}$$
     *   **Input Gradient:** Analytical simplification of the backward pass through standard deviation and mean computations:
-        $$dX\_norm = d\_out \odot \gamma$$
-        $$dX = \frac{1}{D \cdot std} \left[ D \cdot dX\_norm - \sum_{k=1}^D dX\_norm_k - \hat{X} \odot \sum_{k=1}^D (dX\_norm_k \odot \hat{X}_k) \right]$$
+        $$d\hat{X} = dY \odot \gamma$$
+        $$dX = \frac{1}{D \cdot \text{std}} \left[ D \cdot d\hat{X} - \sum_{k=1}^D d\hat{X}_k - \hat{X} \odot \sum_{k=1}^D (d\hat{X}_k \odot \hat{X}_k) \right]$$
         where the sums $\sum_{k=1}^D$ are computed along the last axis (`axis=-1, keepdims=True`).
 
 #### 10.4 Causal Multi-Head Self-Attention (`layers/multihead_attention.py`)
@@ -562,44 +562,44 @@ Causal Multi-Head Self-Attention maps queries, keys, and values to compute conte
         1.  *Projection:* Project inputs to query, key, and value vectors:
             $$Q = X W_q \qquad K = X W_k \qquad V = X W_v \quad \text{shape: } (B, T, D)$$
         2.  *Multi-Head Split:* Split vectors across $H$ heads, transposing to group batch and head indices:
-            $$Q_{split} = \text{transpose}(Q\text{.reshape}(B, T, H, d_k), \text{axes}=[0, 2, 1, 3]) \quad \text{shape: } (B, H, T, d_k)$$
-            Same layout applies to $K_{split}$ and $V_{split}$.
+            $$Q_{\text{split}} = \text{transpose}(Q\text{.reshape}(B, T, H, d_k), \text{axes}=[0, 2, 1, 3]) \quad \text{shape: } (B, H, T, d_k)$$
+            Same layout applies to $K_{\text{split}}$ and $V_{\text{split}}$.
         3.  *Scaled Dot-Product:* Calculate raw attention scores between queries and keys:
-            $$\text{scores} = \frac{Q_{split} K_{split}^T}{\sqrt{d_k}} \quad \text{shape: } (B, H, T, T)$$
+            $$\text{scores} = \frac{Q_{\text{split}} K_{\text{split}}^T}{\sqrt{d_k}} \quad \text{shape: } (B, H, T, T)$$
         4.  *Causal Masking:* Apply an upper triangular matrix mask (offset by $k=1$) to mask out elements where sequence index $j > i$. Causal positions receive an additive penalty of $-10^9$, which collapses to zero attention during Softmax:
             $$\text{scores}_{b,h,i,j} = \text{scores}_{b,h,i,j} - 10^9 \cdot \mathbb{1}[j > i]$$
         5.  *Attention Weights:* Compute normalized probabilities:
             $$A = \text{softmax}(\text{scores}, \text{axis}=-1) \quad \text{shape: } (B, H, T, T)$$
         6.  *Context Aggregation:* Compute weighted sum of values:
-            $$\text{context} = A V_{split} \quad \text{shape: } (B, H, T, d_k)$$
+            $$\text{context} = A V_{\text{split}} \quad \text{shape: } (B, H, T, d_k)$$
         7.  *Concatenation:* Merge head outputs and project back to standard dimension:
-            $$\text{context\_concat} = \text{transpose}(\text{context}, [0, 2, 1, 3])\text{.reshape}(B, T, D)$$
-            $$Z = \text{context\_concat} W_o \quad \text{shape: } (B, T, D)$$
+            $$\text{context}_{\text{concat}} = \text{transpose}(\text{context}, [0, 2, 1, 3])\text{.reshape}(B, T, D)$$
+            $$Z = \text{context}_{\text{concat}} W_o \quad \text{shape: } (B, T, D)$$
 *   **Backward Pass (`backward(self, dZ)`):**
     *   Input `dZ`: Upstream gradient of shape `(Batch_Size, Time_Steps, Embedding_Dim)`.
     *   Output `dX`: Downstream gradient of shape `(Batch_Size, Time_Steps, Embedding_Dim)`.
     *   **Computation (4D Backpropagation):**
         1.  *Output Projection Gradients:*
-            $$dZ\_flat = dZ\text{.reshape}(B \cdot T, D) \qquad \text{context\_flat} = \text{context\_concat}\text{.reshape}(B \cdot T, D)$$
-            $$dW_o = \text{context\_flat}^T \cdot dZ\_flat \qquad d\_context\_concat = dZ \cdot W_o^T$$
+            $$dZ_{\text{flat}} = dZ\text{.reshape}(B \cdot T, D) \qquad \text{context}_{\text{flat}} = \text{context}_{\text{concat}}\text{.reshape}(B \cdot T, D)$$
+            $$dW_o = \text{context}_{\text{flat}}^T \cdot dZ_{\text{flat}} \qquad d\text{context}_{\text{concat}} = dZ \cdot W_o^T$$
         2.  *Reverting Multi-Head Concatenation:*
-            $$d\_context = \text{transpose}(d\_context\_concat\text{.reshape}(B, T, H, d_k), [0, 2, 1, 3]) \quad \text{shape: } (B, H, T, d_k)$$
+            $$d\text{context} = \text{transpose}(d\text{context}_{\text{concat}}\text{.reshape}(B, T, H, d_k), [0, 2, 1, 3]) \quad \text{shape: } (B, H, T, d_k)$$
         3.  *Attention Value Gradients:*
-            $$dV_{split} = A^T \cdot d\_context \quad \text{shape: } (B, H, T, d_k)$$
-            $$dA = d\_context \cdot V_{split}^T \quad \text{shape: } (B, H, T, T)$$
+            $$dV_{\text{split}} = A^T \cdot d\text{context} \quad \text{shape: } (B, H, T, d_k)$$
+            $$dA = d\text{context} \cdot V_{\text{split}}^T \quad \text{shape: } (B, H, T, T)$$
         4.  *Softmax Derivative:*
-            $$d\_scores = \frac{1}{\sqrt{d_k}} \cdot A \odot \left( dA - \sum_{j=1}^T (dA_j \odot A_j) \right) \quad \text{shape: } (B, H, T, T)$$
+            $$d\text{scores} = \frac{1}{\sqrt{d_k}} \cdot A \odot \left( dA - \sum_{j=1}^T (dA_j \odot A_j) \right) \quad \text{shape: } (B, H, T, T)$$
             where the sum and dot-products are calculated along the last axis `axis=-1`.
         5.  *Attention Query & Key Gradients:*
-            $$dQ_{split} = d\_scores \cdot K_{split} \quad \text{shape: } (B, H, T, d_k)$$
-            $$dK_{split} = d\_scores^T \cdot Q_{split} \quad \text{shape: } (B, H, T, d_k)$$
+            $$dQ_{\text{split}} = d\text{scores} \cdot K_{\text{split}} \quad \text{shape: } (B, H, T, d_k)$$
+            $$dK_{\text{split}} = d\text{scores}^T \cdot Q_{\text{split}} \quad \text{shape: } (B, H, T, d_k)$$
         6.  *Re-combining Heads & Input Projections:*
-            Flatten and reshape $dQ_{split}, dK_{split}, dV_{split}$ back to `(B, T, D)`:
-            $$dQ = \text{transpose}(dQ_{split}, [0, 2, 1, 3])\text{.reshape}(B \cdot T, D)$$
-            $$dK = \text{transpose}(dK_{split}, [0, 2, 1, 3])\text{.reshape}(B \cdot T, D)$$
-            $$dV = \text{transpose}(dV_{split}, [0, 2, 1, 3])\text{.reshape}(B \cdot T, D)$$
+            Flatten and reshape $dQ_{\text{split}}, dK_{\text{split}}, dV_{\text{split}}$ back to `(B, T, D)`:
+            $$dQ = \text{transpose}(dQ_{\text{split}}, [0, 2, 1, 3])\text{.reshape}(B \cdot T, D)$$
+            $$dK = \text{transpose}(dK_{\text{split}}, [0, 2, 1, 3])\text{.reshape}(B \cdot T, D)$$
+            $$dV = \text{transpose}(dV_{\text{split}}, [0, 2, 1, 3])\text{.reshape}(B \cdot T, D)$$
             Compute weight matrix gradients (by flattening sequence dimension):
-            $$dW_q = X\_flat^T \cdot dQ \qquad dW_k = X\_flat^T \cdot dK \qquad dW_v = X\_flat^T \cdot dV$$
+            $$dW_q = X_{\text{flat}}^T \cdot dQ \qquad dW_k = X_{\text{flat}}^T \cdot dK \qquad dW_v = X_{\text{flat}}^T \cdot dV$$
             where `X_flat` has shape `(B * T, D)`.
         7.  *Input Downstream Gradient:*
             $$dX = dQ \cdot W_q^T + dK \cdot W_k^T + dV \cdot W_v^T \quad \text{shape: } (B, T, D)$$
@@ -766,8 +766,8 @@ Subword tokenization compresses a text sequence by representing frequent charact
 #### 5.2 Training Experiments (`train_llm.py` & `train_llm_bpe.py`)
 
 *   **Architectural Layout:**
-    $$\text{EmbeddingLayer}(V, D) \rightarrow \text{PositionalEncoding}(T, D) \rightarrow \text{TransformerBlock}(d\_model=D, heads=H, d\_ff) \times 2 \rightarrow \text{DenseLayer}(D, V, \text{Softmax})$$
-    where vocabulary size $V \approx 280$, sequence length $T = 32$, embedding size $D = 64$, attention heads $H = 4$, and feedforward dimension $d\_ff = 256$.
+    $$\text{EmbeddingLayer}(V, D) \rightarrow \text{PositionalEncoding}(T, D) \rightarrow \text{TransformerBlock}(d_{\text{model}}=D, heads=H, d_{\text{ff}}) \times 2 \rightarrow \text{DenseLayer}(D, V, \text{Softmax})$$
+    where vocabulary size $V \approx 280$, sequence length $T = 32$, embedding size $D = 64$, attention heads $H = 4$, and feedforward dimension $d_{\text{ff}} = 256$.
 *   **Optimization Loop:**
     Trains using the adaptive moment estimation [Adam](file:///home/moisesjf10/GitHub/NN/optimizers.py#L12) optimizer (`lr=0.001`), saving trained weights to `transformer_weights.pkl` or `transformer_bpe_weights.pkl`.
 *   **Autoregressive Text Inference:**
