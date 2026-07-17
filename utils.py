@@ -98,3 +98,121 @@ class CharTokenizer:
             Y_onehot[b] = self.to_one_hot(Y_array[b])
             
         return X_onehot, Y_onehot
+
+
+import numpy as np
+
+class BPETokenizer:
+    def __init__(self):
+        self.merges = {}  # Dictionary: (left_id, right_id) -> new_id
+        self.vocab = {}   # Dictionary: id -> bytes (for decoding)
+        self.vocab_size = 256
+        
+    def _get_stats(self, ids):
+        """Finds the absolute frequency of each pair of adjacent tokens."""
+        counts = {}
+        for pair in zip(ids, ids[1:]):
+            counts[pair] = counts.get(pair, 0) + 1
+        return counts
+
+    def _merge(self, ids, pair, new_id):
+        """Iterates over the sequence of IDs and merges occurrences of the 'pair'."""
+        new_ids = []
+        i = 0
+        while i < len(ids):
+            # If we find the pair and we are not at the last element
+            if i < len(ids) - 1 and ids[i] == pair[0] and ids[i+1] == pair[1]:
+                new_ids.append(new_id)
+                i += 2
+            else:
+                new_ids.append(ids[i])
+                i += 1
+        return new_ids
+
+    def train(self, text, vocab_size):
+        """Trains the tokenizer from scratch by building the merge tree."""
+        # 1. Convert raw text to a list of UTF-8 bytes (0-255)
+        text_bytes = text.encode('utf-8')
+        ids = list(text_bytes)
+        
+        # Initialize the base vocabulary (the 256 elemental bytes)
+        self.vocab = {i: bytes([i]) for i in range(256)}
+        
+        # Calculate how many compression operations we need
+        num_merges = vocab_size - 256
+        if num_merges < 0:
+            raise ValueError("vocab_size must be at least 256 (base UTF-8 size)")
+
+        print(f"[BPE] Starting training: {num_merges} target merges...")
+        
+        for i in range(num_merges):
+            stats = self._get_stats(ids)
+            if not stats:
+                break # No more possible pairs
+                
+            # Extract the most frequent tuple (id1, id2)
+            best_pair = max(stats, key=stats.get)
+            new_id = 256 + i
+            
+            # Register the rule for future encodings
+            self.merges[best_pair] = new_id
+            self.vocab[new_id] = self.vocab[best_pair[0]] + self.vocab[best_pair[1]]
+            
+            # Compress the current sequence
+            ids = self._merge(ids, best_pair, new_id)
+            
+        self.vocab_size = len(self.vocab)
+        print(f"[BPE] Training completed. Final vocabulary size: {self.vocab_size} tokens.")
+
+    def encode(self, text):
+        """Converts text into IDs applying the learned merge rules."""
+        text_bytes = text.encode('utf-8')
+        ids = list(text_bytes)
+        
+        while len(ids) >= 2:
+            stats = self._get_stats(ids)
+            
+            # Find the pair present in the sequence that was merged FIRST 
+            # during training (the one with the lowest assigned ID)
+            pair_to_merge = None
+            min_idx = float('inf')
+            
+            for pair in stats:
+                if pair in self.merges and self.merges[pair] < min_idx:
+                    min_idx = self.merges[pair]
+                    pair_to_merge = pair
+                    
+            if pair_to_merge is None:
+                break # No known pairs left
+                
+            # Apply the merge and repeat
+            ids = self._merge(ids, pair_to_merge, self.merges[pair_to_merge])
+            
+        return ids
+
+    def decode(self, ids):
+        """Converts a list of IDs back into a readable string."""
+        b_text = b"".join(self.vocab[idx] for idx in ids)
+        # Decode tolerating errors in case the network predicts an invalid byte
+        return b_text.decode('utf-8', errors='replace')
+        
+    def create_dataset(self, text, seq_length, stride=1):
+        """Shards the text into moving windows for network input."""
+        encoded_text = self.encode(text)
+        X, Y = [], []
+        
+        for i in range(0, len(encoded_text) - seq_length, stride):
+            window = encoded_text[i:i + seq_length]
+            target = encoded_text[i+1:i + seq_length + 1]
+            X.append(window)
+            Y.append(target)
+            
+        X = np.array(X)
+        
+        # One-Hot encoding for Categorical Cross Entropy Loss
+        Y_arr = np.zeros((len(Y), seq_length, self.vocab_size))
+        for i, target_seq in enumerate(Y):
+            for j, token_id in enumerate(target_seq):
+                Y_arr[i, j, token_id] = 1.0
+                
+        return X, Y_arr
