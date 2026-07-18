@@ -8,4 +8,5 @@ from layers.multihead_attention import MultiHeadAttention
 from layers.layernorm import LayerNorm
 from layers.positional_encoding import PositionalEncoding
 from layers.transformer_block import TransformerBlock
-
+from layers.patch_embedding import PatchEmbedding
+from layers.global_average_pooling import GlobalAveragePooling1D
